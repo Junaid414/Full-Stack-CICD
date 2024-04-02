@@ -1,0 +1,94 @@
+pipeline {
+    agent any
+    tools {
+        maven 'maven3'
+        jdk 'jdk17'
+    }
+
+    environment{
+        SCANNER_HOME= tool 'sonar-scanner'
+    }
+    stages {
+        stage('Git Checkout') {
+            steps {
+                git branch: 'main', url: 'https://github.com/Junaid414/Ekart.git'
+            }
+        }
+        
+        stage('Compile') {
+            steps {
+                sh 'mvn compile'
+            }
+        }
+        
+        stage('Unit Test') {
+            steps {
+                sh 'mvn test -DskipTests=true'
+            }
+        }
+        stage('SonarQube-Analysis') {
+            steps {
+                withSonarQubeEnv('sonar') {
+                sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectKey=EKART -Dsonar.projectName=EKART \
+                -Dsonar.java.binaries=. '''
+                }
+            }
+        }
+        stage('OWASP Dependency Check') {
+            steps {
+                dependencyCheck additionalArguments: '--scan ./', odcInstallation: 'DC'
+                dependencyCheckPublisher pattern: 'dependency-check-report.xml'
+            }
+        }
+        stage('BUILD') {
+            steps {
+                sh 'mvn package -DskipTests=true'
+            }
+        }
+        stage('Deploy Nexus') {
+            steps {
+                withMaven(globalMavenSettingsConfig: 'global-maven', jdk: 'jdk17', maven: 'maven3', mavenSettingsConfig: '', traceability: true) {
+                sh 'mvn deploy -DskipTests=true'
+                }
+            }
+        }
+        stage('Build Docker Image') {
+            steps {
+                script{
+                     withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                sh 'docker build -t hasil86/ekart:latest -f docker/Dockerfile .'
+                }
+                }
+               
+            }
+        }    
+        stage('Trivy Scan'){
+            steps{
+                sh 'trivy image hasil86/ekart:latest > trivy-report.txt'
+            }
+        }
+        
+        stage('Push Docker Image to Registry') {
+            steps {
+                script{
+                        withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                sh 'docker push hasil86/ekart:latest '
+                }
+                }
+            
+            }
+            
+        }
+        
+        stage('Kubernetes Deploy'){
+            steps{
+                withKubeConfig(caCertificate: '', clusterName: '', contextName: '', credentialsId: 'kubernetes', namespace: 'webapps', restrictKubeConfigAccess: false, serverUrl: 'https://172.31.17.34:6443') {
+                sh "kubectl create -f deploymentservice.yml"
+                sh "kubectl get svc -n webapps"
+            }
+            }
+        }
+
+    }
+}
+
